@@ -1,5 +1,19 @@
-docs/
+debug/
 .venv/
 .pytest_cache/
+.ruff_cache/
 __pycache__/
 *.py[cod]
+*.pt
+.DS_Store
+
+# Tests and docs (not published)
+tests/
+docs/
+
+# External reference repos (large, not part of the project)
+WithNuri-references/
+
+# MediaMTX binaries (platform-specific, download from upstream); keep mediamtx.yml + LICENSE
+WithNuri-tools/mediamtx/mediamtx
+WithNuri-tools/mediamtx/mediamtx.tar.gz

@@ -1,0 +1,1 @@
+"""Frame processing pipeline primitives."""

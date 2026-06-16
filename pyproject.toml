@@ -10,11 +10,21 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "legojeon" }]
-dependencies = []
+dependencies = [
+  "pillow>=9.1",
+]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.2",
+  "ruff>=0.15",
+]
+ml = [
+  "numpy>=1.26",
+  "ultralytics>=8.3",
+]
+ui = [
+  "PySide6>=6.7",
 ]
 
 [project.scripts]

@@ -16,7 +16,9 @@ class PhoneRtmpProfile:
         if not self.host or "/" in self.host:
             raise ValueError("host must be a hostname or IP address without a path")
         if not _STREAM_NAME_PATTERN.fullmatch(self.stream_name):
-            raise ValueError("stream_name must contain only letters, numbers, underscores, or hyphens")
+            raise ValueError(
+                "stream_name must contain only letters, numbers, underscores, or hyphens"
+            )
 
     @property
     def publish_url(self) -> str:
@@ -28,7 +30,6 @@ class PhoneRtmpProfile:
 
 
 class MoblinRtmpProfile(PhoneRtmpProfile):
-
     @property
     def instructions(self) -> list[str]:
         return [
@@ -40,7 +41,6 @@ class MoblinRtmpProfile(PhoneRtmpProfile):
 
 
 class YaseaRtmpProfile(PhoneRtmpProfile):
-
     @property
     def instructions(self) -> list[str]:
         return [
