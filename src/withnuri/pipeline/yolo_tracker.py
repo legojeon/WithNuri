@@ -6,7 +6,7 @@ from withnuri.pipeline.frames import MaskFrame, RawFrame
 
 
 DEFAULT_YOLO_SEGMENT_MODEL = "yolo11n-seg.pt"
-DOG_CLASS_NAME = "dog"
+TRACKED_CLASS_NAMES = frozenset({"dog", "cat"})
 ModelLoader = Callable[[str], Any]
 
 
@@ -179,7 +179,7 @@ def _dog_tracks_from_results(
     for class_id, box, mask_plane, track_id in zip(
         class_ids, box_values, mask_planes, track_ids, strict=False
     ):
-        if names.get(int(class_id)) != DOG_CLASS_NAME:
+        if names.get(int(class_id)) not in TRACKED_CLASS_NAMES:
             continue
         bbox = _bbox_tuple(box)
         tracks.append(
