@@ -1,7 +1,7 @@
 from PIL import Image, ImageDraw
 
 from withnuri.pipeline.frames import ProcessedFrame, RawFrame
-from withnuri.pipeline.yolo_tracker import DogTrackingFrame
+from withnuri.pipeline.yolo_tracker import PetTrackingFrame
 
 
 YOLO_GREEN = (0, 255, 0, 255)
@@ -10,7 +10,7 @@ TRACK_BLUE = (0, 120, 255, 255)
 
 
 def render_tracking_debug_overlay(
-    frame: RawFrame, tracking: DogTrackingFrame
+    frame: RawFrame, tracking: PetTrackingFrame
 ) -> ProcessedFrame:
     if frame.pixel_format != "rgb24":
         raise ValueError("debug overlay expects an rgb24 RawFrame")

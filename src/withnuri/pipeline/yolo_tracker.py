@@ -15,7 +15,7 @@ class YoloTrackingDependencyMissing(RuntimeError):
 
 
 @dataclass(frozen=True)
-class DogTrackOverlay:
+class PetTrackOverlay:
     track_id: int | None
     yolo_bbox: tuple[int, int, int, int] | None
     track_bbox: tuple[int, int, int, int] | None
@@ -25,15 +25,15 @@ class DogTrackOverlay:
 
 
 @dataclass(frozen=True)
-class DogTrackingFrame:
+class PetTrackingFrame:
     width: int
     height: int
     timestamp_seconds: float
-    tracks: list[DogTrackOverlay]
+    tracks: list[PetTrackOverlay]
 
 
 @dataclass
-class YoloDogTracker:
+class YoloPetTracker:
     model_name: str = DEFAULT_YOLO_SEGMENT_MODEL
     confidence: float = 0.25
     image_size: int | tuple[int, int] = 640
@@ -42,9 +42,9 @@ class YoloDogTracker:
     model: Any | None = None
     model_loader: ModelLoader | None = None
     array_module: Any | None = None
-    _cache: dict[int, DogTrackOverlay] = field(default_factory=dict, init=False)
+    _cache: dict[int, PetTrackOverlay] = field(default_factory=dict, init=False)
 
-    def track(self, frame: RawFrame) -> DogTrackingFrame:
+    def track(self, frame: RawFrame) -> PetTrackingFrame:
         image = rgb24_to_bgr_array(frame, array_module=self._array_module())
         try:
             results = self._model().track(
@@ -61,7 +61,7 @@ class YoloDogTracker:
         except Exception as exc:
             raise RuntimeError(f"YOLO tracking failed: {exc}") from exc
 
-        detected_tracks = _dog_tracks_from_results(
+        detected_tracks = _pet_tracks_from_results(
             results,
             array_module=self._array_module(),
             width=frame.width,
@@ -69,7 +69,7 @@ class YoloDogTracker:
             timestamp_seconds=frame.timestamp_seconds,
         )
         tracks = self._apply_cache(detected_tracks)
-        return DogTrackingFrame(
+        return PetTrackingFrame(
             width=frame.width,
             height=frame.height,
             timestamp_seconds=frame.timestamp_seconds,
@@ -77,8 +77,8 @@ class YoloDogTracker:
         )
 
     def _apply_cache(
-        self, detected_tracks: list[DogTrackOverlay]
-    ) -> list[DogTrackOverlay]:
+        self, detected_tracks: list[PetTrackOverlay]
+    ) -> list[PetTrackOverlay]:
         tracks = list(detected_tracks)
         current_ids = {
             track.track_id for track in detected_tracks if track.track_id is not None
@@ -95,7 +95,7 @@ class YoloDogTracker:
             cache_age = cached.cache_age + 1
             if cache_age > self.cache_frames:
                 continue
-            retained = DogTrackOverlay(
+            retained = PetTrackOverlay(
                 track_id=track_id,
                 yolo_bbox=None,
                 track_bbox=cached.track_bbox,
@@ -153,14 +153,14 @@ def rgb24_to_bgr_array(frame: RawFrame, *, array_module: Any):
     return rgb[:, :, ::-1].copy()
 
 
-def _dog_tracks_from_results(
+def _pet_tracks_from_results(
     results: Any,
     *,
     array_module: Any,
     width: int,
     height: int,
     timestamp_seconds: float,
-) -> list[DogTrackOverlay]:
+) -> list[PetTrackOverlay]:
     if not results:
         return []
     result = results[0]
@@ -183,7 +183,7 @@ def _dog_tracks_from_results(
             continue
         bbox = _bbox_tuple(box)
         tracks.append(
-            DogTrackOverlay(
+            PetTrackOverlay(
                 track_id=None if track_id is None else int(track_id),
                 yolo_bbox=bbox,
                 track_bbox=bbox,
@@ -223,7 +223,7 @@ def _track_ids(boxes: Any, *, count: int) -> list[int | None]:
 def _bbox_tuple(box: Any) -> tuple[int, int, int, int]:
     values = list(box)
     if len(values) != 4:
-        raise RuntimeError("YOLO dog box must have 4 xyxy values")
+        raise RuntimeError("YOLO detection box must have 4 xyxy values")
     return tuple(round(float(value)) for value in values)
 
 
@@ -237,7 +237,7 @@ def _mask_from_plane(
 ) -> MaskFrame:
     plane = array_module.asarray(mask_plane)
     if tuple(plane.shape) != (height, width):
-        raise RuntimeError("YOLO dog mask shape does not match frame dimensions")
+        raise RuntimeError("YOLO detection mask shape does not match frame dimensions")
     data = (plane > 0).astype(array_module.uint8) * 255
     return MaskFrame(
         width=width,

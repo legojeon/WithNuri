@@ -5,7 +5,7 @@ import sys
 import time
 
 from withnuri.pipeline.yolo_tracker import (
-    YoloDogTracker,
+    YoloPetTracker,
     YoloTrackingDependencyMissing,
 )
 from withnuri.streaming.decoder import DecodeToolMissing, FfmpegFrameDecoder
@@ -24,7 +24,7 @@ def main(
     *,
     runner=subprocess.run,
     decoder_factory=FfmpegFrameDecoder,
-    yolo_tracker_factory=YoloDogTracker,
+    yolo_tracker_factory=YoloPetTracker,
     debug_window_factory=QtDebugWindow,
     debug_runner=run_tracking_debug_preview,
     clock=time.monotonic,
@@ -248,6 +248,6 @@ def _print_tracking_debug_result(status: str, url: str, result) -> None:
     print(f"Frames rendered: {result.frames_rendered}")
     if status == "interrupted":
         print(
-            f"Visible dog frames: {result.visible_frame_count}/{result.frames_rendered}"
+            f"Visible pet frames: {result.visible_frame_count}/{result.frames_rendered}"
         )
         print(f"Last frame visible: {'yes' if result.last_frame_visible else 'no'}")
