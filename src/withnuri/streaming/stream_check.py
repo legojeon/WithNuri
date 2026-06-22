@@ -22,17 +22,21 @@ def check_stream(
     started_at = clock()
     frame_count = 0
     last_frame = None
+    elapsed = 0.0
 
     for frame in decoder.iter_frames():
         frame_count += 1
         last_frame = frame
-        if clock() - started_at >= seconds:
+        elapsed = clock() - started_at
+        if elapsed >= seconds:
             break
 
-    if frame_count == 0:
-        return StreamCheckResult(frame_count=0, observed_fps=0.0, last_frame=None)
+    if frame_count == 0 or elapsed <= 0:
+        return StreamCheckResult(
+            frame_count=frame_count, observed_fps=0.0, last_frame=last_frame
+        )
     return StreamCheckResult(
         frame_count=frame_count,
-        observed_fps=round(frame_count / seconds, 2),
+        observed_fps=round(frame_count / elapsed, 2),
         last_frame=last_frame,
     )

@@ -16,9 +16,6 @@ from withnuri.ui.debug_window import QtDebugWindow, run_tracking_debug_preview
 from withnuri.ui.windowing import PreviewWindowUnavailable
 
 
-TRACKER_NAME = "yolo11n-seg + ByteTrack"
-
-
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -80,7 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     tracking_parser = subparsers.add_parser(
         "tracking-debug",
-        help="Show a camera debug window with YOLO masks and ByteTrack IDs.",
+        help="Show a camera debug window with YOLO masks and tracker IDs.",
     )
     tracking_parser.add_argument("url")
     _add_frame_size_args(tracking_parser)
@@ -97,6 +94,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_frame_size_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--width", type=int, default=320)
     parser.add_argument("--height", type=int, default=180)
+
+
+def _report_missing_decode_tool() -> int:
+    print(
+        "ffmpeg was not found. Install ffmpeg or configure a bundled decode tool.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def _run_moblin_rtmp(args) -> int:
@@ -140,11 +145,7 @@ def _run_grab_frame(args, *, decoder_factory) -> int:
     try:
         frame = decoder.read_one_frame()
     except DecodeToolMissing:
-        print(
-            "ffmpeg was not found. Install ffmpeg or configure a bundled decode tool.",
-            file=sys.stderr,
-        )
-        return 2
+        return _report_missing_decode_tool()
     except RuntimeError as exc:
         print(f"Frame capture failed: {exc}", file=sys.stderr)
         return 1
@@ -160,11 +161,7 @@ def _run_stream_check(args, *, decoder_factory, clock) -> int:
     try:
         result = check_stream(decoder, seconds=args.seconds, clock=clock)
     except DecodeToolMissing:
-        print(
-            "ffmpeg was not found. Install ffmpeg or configure a bundled decode tool.",
-            file=sys.stderr,
-        )
-        return 2
+        return _report_missing_decode_tool()
     except RuntimeError as exc:
         print(f"Stream check failed: {exc}", file=sys.stderr)
         return 1
@@ -217,11 +214,7 @@ def _run_tracking_debug(
             decoder, tracker=tracker, window=window, max_frames=args.max_frames
         )
     except DecodeToolMissing:
-        print(
-            "ffmpeg was not found. Install ffmpeg or configure a bundled decode tool.",
-            file=sys.stderr,
-        )
-        return 2
+        return _report_missing_decode_tool()
     except YoloTrackingDependencyMissing as exc:
         print(f"YOLO tracking is unavailable: {exc}", file=sys.stderr)
         return 2
@@ -236,15 +229,21 @@ def _run_tracking_debug(
         return 130
 
     if result.interrupted:
-        _print_tracking_debug_result("interrupted", args.url, result)
+        _print_tracking_debug_result(
+            "interrupted", args.url, result, tracker_name=tracker.display_name
+        )
         return 130
-    _print_tracking_debug_result("closed", args.url, result)
+    _print_tracking_debug_result(
+        "closed", args.url, result, tracker_name=tracker.display_name
+    )
     return 0
 
 
-def _print_tracking_debug_result(status: str, url: str, result) -> None:
+def _print_tracking_debug_result(
+    status: str, url: str, result, *, tracker_name: str
+) -> None:
     print(f"Tracking debug {status}: {url}")
-    print(f"Tracker: {TRACKER_NAME}")
+    print(f"Tracker: {tracker_name}")
     print(f"Frames rendered: {result.frames_rendered}")
     if status == "interrupted":
         print(

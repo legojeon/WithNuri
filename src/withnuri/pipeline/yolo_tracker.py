@@ -9,6 +9,11 @@ DEFAULT_YOLO_SEGMENT_MODEL = "yolo11n-seg.pt"
 TRACKED_CLASS_NAMES = frozenset({"dog", "cat"})
 ModelLoader = Callable[[str], Any]
 
+_TRACKER_DISPLAY_NAMES = {
+    "bytetrack.yaml": "ByteTrack",
+    "botsort.yaml": "BoT-SORT",
+}
+
 
 class YoloTrackingDependencyMissing(RuntimeError):
     """Raised when optional YOLO tracking dependencies are not installed."""
@@ -17,8 +22,7 @@ class YoloTrackingDependencyMissing(RuntimeError):
 @dataclass(frozen=True)
 class PetTrackOverlay:
     track_id: int | None
-    yolo_bbox: tuple[int, int, int, int] | None
-    track_bbox: tuple[int, int, int, int] | None
+    bbox: tuple[int, int, int, int] | None
     mask: MaskFrame
     detected: bool
     cache_age: int = 0
@@ -43,6 +47,12 @@ class YoloPetTracker:
     model_loader: ModelLoader | None = None
     array_module: Any | None = None
     _cache: dict[int, PetTrackOverlay] = field(default_factory=dict, init=False)
+
+    @property
+    def display_name(self) -> str:
+        model = self.model_name.removesuffix(".pt")
+        tracker = _TRACKER_DISPLAY_NAMES.get(self.tracker_config, self.tracker_config)
+        return f"{model} + {tracker}"
 
     def track(self, frame: RawFrame) -> PetTrackingFrame:
         image = rgb24_to_bgr_array(frame, array_module=self._array_module())
@@ -97,8 +107,7 @@ class YoloPetTracker:
                 continue
             retained = PetTrackOverlay(
                 track_id=track_id,
-                yolo_bbox=None,
-                track_bbox=cached.track_bbox,
+                bbox=cached.bbox,
                 mask=cached.mask,
                 detected=False,
                 cache_age=cache_age,
@@ -185,8 +194,7 @@ def _pet_tracks_from_results(
         tracks.append(
             PetTrackOverlay(
                 track_id=None if track_id is None else int(track_id),
-                yolo_bbox=bbox,
-                track_bbox=bbox,
+                bbox=bbox,
                 mask=_mask_from_plane(
                     mask_plane,
                     array_module=array_module,
