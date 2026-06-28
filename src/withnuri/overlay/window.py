@@ -226,8 +226,10 @@ def build_overlay_tray(window, *, on_quit, qt_modules: dict | None = None):
     icon.show()
 
     tray = _OverlayTray(icon, menu, arrange_action, window, on_quit)
-    arrange_action.triggered.connect(tray.toggle_arrange_mode)
-    quit_action.triggered.connect(tray.quit)
+    # QAction.triggered emits a bool (checked state) as a positional argument;
+    # the lambdas intentionally swallow it so the no-arg methods work correctly.
+    arrange_action.triggered.connect(lambda *_: tray.toggle_arrange_mode())
+    quit_action.triggered.connect(lambda *_: tray.quit())
     return tray
 
 
