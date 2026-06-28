@@ -1,8 +1,14 @@
+import threading
 import time
 
 from withnuri.pipeline.frames import ProcessedFrame
-from withnuri.pipeline.matte import scale_processed_alpha
-from withnuri.ui.windowing import PreviewWindowUnavailable, resize_processed_frame
+from withnuri.pipeline.matte import render_pet_matte, scale_processed_alpha
+from withnuri.pipeline.queue import LatestFrameQueue
+from withnuri.ui.windowing import (
+    PreviewResult,
+    PreviewWindowUnavailable,
+    resize_processed_frame,
+)
 
 
 class OverlayWindowUnavailable(PreviewWindowUnavailable):
@@ -231,6 +237,88 @@ def build_overlay_tray(window, *, on_quit, qt_modules: dict | None = None):
     arrange_action.triggered.connect(lambda *_: tray.toggle_arrange_mode())
     quit_action.triggered.connect(lambda *_: tray.quit())
     return tray
+
+
+def run_pet_overlay(
+    decoder,
+    *,
+    tracker,
+    window,
+    app_runner,
+    renderer=render_pet_matte,
+    fade=None,
+    feather_radius: float = 1.5,
+    max_frames: int | None = None,
+    sleep=time.sleep,
+    idle_seconds: float = 0.005,
+) -> PreviewResult:
+    queue: LatestFrameQueue = LatestFrameQueue()
+    stop = threading.Event()
+    producer_error: list[BaseException] = []
+    frame_iter = decoder.iter_frames()
+
+    def produce() -> None:
+        try:
+            for raw_frame in frame_iter:
+                if stop.is_set():
+                    break
+                queue.put(raw_frame)
+        except BaseException as exc:  # surfaced to the consumer after join
+            producer_error.append(exc)
+        finally:
+            stop.set()
+            frame_iter.close()
+
+    thread = threading.Thread(target=produce, name="withnuri-overlay-decode", daemon=True)
+
+    state = {"frames_rendered": 0, "visible": 0, "last_visible": False}
+
+    def tick() -> bool:
+        raw_frame = queue.latest()
+        if raw_frame is None:
+            if stop.is_set():
+                return False
+            sleep(idle_seconds)
+            return True
+        tracking = tracker.track(raw_frame)
+        fresh = renderer(raw_frame, tracking, feather_radius=feather_radius)
+        has_pet = bool(tracking.tracks)
+        frame_to_show = fade.display_frame(fresh, has_pet) if fade else fresh
+        window.show_frame(frame_to_show)
+        state["frames_rendered"] += 1
+        state["last_visible"] = has_pet
+        if has_pet:
+            state["visible"] += 1
+        if window.should_close():
+            return False
+        if max_frames is not None and state["frames_rendered"] >= max_frames:
+            return False
+        return not stop.is_set()
+
+    interrupted = False
+    thread.start()
+    try:
+        app_runner(tick)
+    except KeyboardInterrupt:
+        interrupted = True
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+        window.close()
+
+    if producer_error:
+        error = producer_error[0]
+        if isinstance(error, KeyboardInterrupt):
+            interrupted = True
+        elif not interrupted:
+            raise error
+
+    return PreviewResult(
+        frames_rendered=state["frames_rendered"],
+        interrupted=interrupted,
+        visible_frame_count=state["visible"],
+        last_frame_visible=state["last_visible"],
+    )
 
 
 def _load_tray_qt_modules() -> dict:
