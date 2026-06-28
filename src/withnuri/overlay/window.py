@@ -239,6 +239,30 @@ def build_overlay_tray(window, *, on_quit, qt_modules: dict | None = None):
     return tray
 
 
+def run_pet_overlay_qt(decoder, *, tracker, window, fade=None, **kwargs):
+    from PySide6.QtCore import QTimer
+
+    app = window._app
+
+    def app_runner(tick):
+        timer = QTimer()
+
+        def on_timeout():
+            if not tick():
+                timer.stop()
+                app.quit()
+
+        timer.timeout.connect(on_timeout)
+        timer.start(0)
+        app.exec()
+
+    if fade is None:
+        fade = FadeController()
+    return run_pet_overlay(
+        decoder, tracker=tracker, window=window, app_runner=app_runner, fade=fade, **kwargs
+    )
+
+
 def run_pet_overlay(
     decoder,
     *,

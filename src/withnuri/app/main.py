@@ -12,6 +12,7 @@ from withnuri.streaming.decoder import DecodeToolMissing, FfmpegFrameDecoder
 from withnuri.streaming.phone_profiles import MoblinRtmpProfile
 from withnuri.streaming.probe import ProbeToolMissing, probe_stream
 from withnuri.streaming.stream_check import check_stream
+from withnuri.overlay.window import OverlayWindow, run_pet_overlay_qt
 from withnuri.ui.debug_window import QtDebugWindow, run_tracking_debug_preview
 from withnuri.ui.windowing import PreviewWindowUnavailable
 
@@ -24,6 +25,8 @@ def main(
     yolo_tracker_factory=YoloPetTracker,
     debug_window_factory=QtDebugWindow,
     debug_runner=run_tracking_debug_preview,
+    overlay_window_factory=OverlayWindow,
+    overlay_runner=run_pet_overlay_qt,
     clock=time.monotonic,
 ) -> int:
     parser = _build_parser()
@@ -44,6 +47,14 @@ def main(
             yolo_tracker_factory=yolo_tracker_factory,
             debug_window_factory=debug_window_factory,
             debug_runner=debug_runner,
+        )
+    if args.command == "overlay":
+        return _run_overlay(
+            args,
+            decoder_factory=decoder_factory,
+            yolo_tracker_factory=yolo_tracker_factory,
+            overlay_window_factory=overlay_window_factory,
+            overlay_runner=overlay_runner,
         )
 
     parser.error(f"unknown command: {args.command}")
@@ -88,6 +99,22 @@ def _build_parser() -> argparse.ArgumentParser:
     tracking_parser.add_argument("--confidence", type=float, default=0.25)
     tracking_parser.add_argument("--image-size", type=int, default=640)
     tracking_parser.add_argument("--mask-cache-frames", type=int, default=8)
+
+    overlay_parser = subparsers.add_parser(
+        "overlay",
+        help="Show the transparent always-on-top pet overlay.",
+    )
+    overlay_parser.add_argument("url")
+    _add_frame_size_args(overlay_parser)
+    overlay_parser.add_argument("--panel-width", type=int, default=480)
+    overlay_parser.add_argument("--panel-height", type=int, default=270)
+    overlay_parser.add_argument("--feather-radius", type=float, default=1.5)
+    overlay_parser.add_argument("--decode-fps", type=float)
+    overlay_parser.add_argument("--max-frames", type=int)
+    overlay_parser.add_argument("--confidence", type=float, default=0.25)
+    overlay_parser.add_argument("--image-size", type=int, default=640)
+    overlay_parser.add_argument("--mask-cache-frames", type=int, default=8)
+
     return parser
 
 
@@ -237,6 +264,60 @@ def _run_tracking_debug(
         "closed", args.url, result, tracker_name=tracker.display_name
     )
     return 0
+
+
+def _run_overlay(
+    args,
+    *,
+    decoder_factory,
+    yolo_tracker_factory,
+    overlay_window_factory,
+    overlay_runner,
+) -> int:
+    decoder = decoder_factory(
+        args.url,
+        args.width,
+        args.height,
+        output_fps=args.decode_fps,
+        reraise_interrupts_on_cleanup=True,
+    )
+    try:
+        tracker = yolo_tracker_factory(
+            confidence=args.confidence,
+            image_size=args.image_size,
+            cache_frames=args.mask_cache_frames,
+        )
+        window = overlay_window_factory(
+            panel_width=args.panel_width,
+            panel_height=args.panel_height,
+        )
+        result = overlay_runner(
+            decoder,
+            tracker=tracker,
+            window=window,
+            feather_radius=args.feather_radius,
+            max_frames=args.max_frames,
+        )
+    except DecodeToolMissing:
+        return _report_missing_decode_tool()
+    except YoloTrackingDependencyMissing as exc:
+        print(f"YOLO tracking is unavailable: {exc}", file=sys.stderr)
+        return 2
+    except PreviewWindowUnavailable as exc:
+        print(f"Overlay window is unavailable: {exc}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(f"Overlay failed: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Overlay interrupted.")
+        return 130
+
+    status = "interrupted" if result.interrupted else "closed"
+    print(f"Overlay {status}: {args.url}")
+    print(f"Tracker: {tracker.display_name}")
+    print(f"Frames rendered: {result.frames_rendered}")
+    return 130 if result.interrupted else 0
 
 
 def _print_tracking_debug_result(
