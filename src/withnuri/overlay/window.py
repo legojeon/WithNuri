@@ -108,7 +108,7 @@ class OverlayWindow:
             frame.height,
             self._qimage.Format_RGBA8888_Premultiplied,
         ).copy()
-        self._last_image = image
+        self._last_image = image  # retains the QImage backing buffer alive for the pixmap
         self._label.setPixmap(self._qpixmap.fromImage(image))
         self._app.processEvents()
 
@@ -284,6 +284,11 @@ def run_pet_overlay_qt(decoder, *, tracker, window, fade=None, **kwargs):
     except Exception:
         pass
 
+    # Build the system tray (Quit + arrange-mode toggle) and tie its lifetime
+    # to the window so Qt does not garbage-collect the QSystemTrayIcon, which
+    # would silently drop the menu. on_quit stops the event loop.
+    window._tray = build_overlay_tray(window, on_quit=app.quit)
+
     def app_runner(tick):
         timer = QTimer()
 
@@ -331,6 +336,8 @@ def run_pet_overlay(
             producer_error.append(exc)
         finally:
             stop.set()
+            # Safe to close here: the generator is owned by this thread, so its
+            # cleanup (terminating ffmpeg) runs without cross-thread races.
             frame_iter.close()
 
     thread = threading.Thread(target=produce, name="withnuri-overlay-decode", daemon=True)
