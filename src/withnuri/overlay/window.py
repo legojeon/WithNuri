@@ -186,6 +186,67 @@ class FadeController:
         return scale_processed_alpha(self._last_good, factor)
 
 
+class _OverlayTray:
+    def __init__(self, icon, menu, arrange_action, window, on_quit):
+        self._icon = icon
+        self._menu = menu
+        self._arrange_action = arrange_action
+        self._window = window
+        self._on_quit = on_quit
+
+    @property
+    def icon(self):
+        return self._icon
+
+    def toggle_arrange_mode(self) -> None:
+        arrange_on = not self._arrange_action.isChecked()
+        self._arrange_action.setChecked(arrange_on)
+        # arrange mode ON means the window must NOT be click-through
+        self._window.set_click_through(not arrange_on)
+
+    def quit(self) -> None:
+        self._on_quit()
+
+
+def build_overlay_tray(window, *, on_quit, qt_modules: dict | None = None):
+    modules = qt_modules or _load_tray_qt_modules()
+    icon = modules["QSystemTrayIcon"](modules["QIcon"]())
+    menu = modules["QMenu"]()
+
+    arrange_action = modules["QAction"]("Arrange mode")
+    arrange_action.setCheckable(True)
+    arrange_action.setChecked(False)
+    quit_action = modules["QAction"]("Quit")
+
+    menu.addAction(arrange_action)
+    menu.addSeparator()
+    menu.addAction(quit_action)
+    icon.setContextMenu(menu)
+    icon.setToolTip("WithNuri")
+    icon.show()
+
+    tray = _OverlayTray(icon, menu, arrange_action, window, on_quit)
+    arrange_action.triggered.connect(tray.toggle_arrange_mode)
+    quit_action.triggered.connect(tray.quit)
+    return tray
+
+
+def _load_tray_qt_modules() -> dict:
+    try:
+        from PySide6.QtGui import QAction, QIcon
+        from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+    except ImportError as exc:
+        raise OverlayWindowUnavailable(
+            "PySide6 is required for the overlay system tray"
+        ) from exc
+    return {
+        "QSystemTrayIcon": QSystemTrayIcon,
+        "QMenu": QMenu,
+        "QIcon": QIcon,
+        "QAction": QAction,
+    }
+
+
 def _load_overlay_qt_modules() -> dict:
     try:
         from PySide6.QtCore import Qt
