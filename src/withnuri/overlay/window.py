@@ -239,10 +239,50 @@ def build_overlay_tray(window, *, on_quit, qt_modules: dict | None = None):
     return tray
 
 
+def apply_macos_overlay_chrome(window, *, appkit="__auto__") -> bool:
+    if appkit == "__auto__":
+        appkit = _load_appkit()
+    if appkit is None:
+        return False
+    view = appkit.view_for(int(window.widget.winId()))
+    ns_window = view.window()
+    ns_window.setLevel_(appkit.NSStatusWindowLevel)
+    ns_window.setCollectionBehavior_((1 << 0) | (1 << 8) | (1 << 4))
+    ns_window.setHasShadow_(False)
+    ns_window.setIgnoresMouseEvents_(True)
+    return True
+
+
+def _load_appkit():
+    import sys
+
+    if sys.platform != "darwin":
+        return None
+    try:
+        import objc
+        from AppKit import NSStatusWindowLevel
+    except ImportError:
+        return None
+
+    class _AppKitAdapter:
+        NSStatusWindowLevel = NSStatusWindowLevel
+
+        @staticmethod
+        def view_for(win_id):
+            return objc.objc_object(c_void_p=win_id)
+
+    return _AppKitAdapter()
+
+
 def run_pet_overlay_qt(decoder, *, tracker, window, fade=None, **kwargs):
     from PySide6.QtCore import QTimer
 
     app = window._app
+
+    try:
+        apply_macos_overlay_chrome(window)
+    except Exception:
+        pass
 
     def app_runner(tick):
         timer = QTimer()
