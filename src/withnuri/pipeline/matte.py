@@ -17,6 +17,8 @@ def render_pet_matte(
 
     alpha = Image.new("L", size, 0)
     for track in tracking.tracks:
+        if track.mask.width != frame.width or track.mask.height != frame.height:
+            raise ValueError("track mask dimensions must match the frame")
         mask = Image.frombytes("L", size, track.mask.data)
         alpha = ImageChops.lighter(alpha, mask)  # union = per-pixel max
     if feather_radius > 0:
@@ -38,7 +40,7 @@ def render_pet_matte(
 def scale_processed_alpha(frame: ProcessedFrame, factor: float) -> ProcessedFrame:
     factor = max(0.0, min(1.0, factor))
     image = Image.frombytes("RGBA", (frame.width, frame.height), frame.data)
-    scaled = image.point(lambda value: int(value * factor))
+    scaled = image.point(lambda value: round(value * factor))
     return ProcessedFrame(
         width=frame.width,
         height=frame.height,
