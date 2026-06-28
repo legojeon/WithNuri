@@ -214,9 +214,20 @@ class _OverlayTray:
         self._on_quit()
 
 
+def _make_tray_icon(modules):
+    # A null QIcon renders as an invisible/blank slot in the menu bar, so draw a
+    # small solid swatch when the drawing classes are available. Injected fake
+    # qt_modules (tests) omit QPixmap/QColor and fall back to the empty icon.
+    if "QPixmap" in modules and "QColor" in modules:
+        pixmap = modules["QPixmap"](22, 22)
+        pixmap.fill(modules["QColor"](0, 200, 120))
+        return modules["QIcon"](pixmap)
+    return modules["QIcon"]()
+
+
 def build_overlay_tray(window, *, on_quit, qt_modules: dict | None = None):
     modules = qt_modules or _load_tray_qt_modules()
-    icon = modules["QSystemTrayIcon"](modules["QIcon"]())
+    icon = modules["QSystemTrayIcon"](_make_tray_icon(modules))
     menu = modules["QMenu"]()
 
     arrange_action = modules["QAction"]("Arrange mode")
@@ -264,14 +275,18 @@ def _load_appkit():
     except ImportError:
         return None
 
+    # A class body cannot see the enclosing function's locals, so writing
+    # `NSStatusWindowLevel = NSStatusWindowLevel` in the class body raises
+    # NameError. Set it as an instance attribute from function scope instead.
+    # (view_for is a method, which *does* close over `objc`, so it resolves.)
     class _AppKitAdapter:
-        NSStatusWindowLevel = NSStatusWindowLevel
-
         @staticmethod
         def view_for(win_id):
             return objc.objc_object(c_void_p=win_id)
 
-    return _AppKitAdapter()
+    adapter = _AppKitAdapter()
+    adapter.NSStatusWindowLevel = NSStatusWindowLevel
+    return adapter
 
 
 def run_pet_overlay_qt(decoder, *, tracker, window, fade=None, **kwargs):
@@ -394,7 +409,7 @@ def run_pet_overlay(
 
 def _load_tray_qt_modules() -> dict:
     try:
-        from PySide6.QtGui import QAction, QIcon
+        from PySide6.QtGui import QAction, QColor, QIcon, QPixmap
         from PySide6.QtWidgets import QMenu, QSystemTrayIcon
     except ImportError as exc:
         raise OverlayWindowUnavailable(
@@ -405,6 +420,8 @@ def _load_tray_qt_modules() -> dict:
         "QMenu": QMenu,
         "QIcon": QIcon,
         "QAction": QAction,
+        "QPixmap": QPixmap,
+        "QColor": QColor,
     }
 
 
