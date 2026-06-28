@@ -1,4 +1,7 @@
+import time
+
 from withnuri.pipeline.frames import ProcessedFrame
+from withnuri.pipeline.matte import scale_processed_alpha
 from withnuri.ui.windowing import PreviewWindowUnavailable, resize_processed_frame
 
 
@@ -148,6 +151,39 @@ class OverlayWindow:
         screen = self._app.primaryScreen()
         rect = screen.availableGeometry()
         return (rect.x(), rect.y(), rect.width(), rect.height())
+
+
+class FadeController:
+    def __init__(
+        self,
+        *,
+        hold_seconds: float = 0.6,
+        fade_seconds: float = 0.5,
+        clock=time.monotonic,
+    ):
+        self._hold_seconds = hold_seconds
+        self._fade_seconds = fade_seconds
+        self._clock = clock
+        self._last_good: ProcessedFrame | None = None
+        self._lost_at: float | None = None
+
+    def display_frame(self, fresh: ProcessedFrame, has_pet: bool) -> ProcessedFrame:
+        if has_pet:
+            self._last_good = fresh
+            self._lost_at = None
+            return fresh
+        if self._last_good is None:
+            return fresh
+        if self._lost_at is None:
+            self._lost_at = self._clock()
+        elapsed = self._clock() - self._lost_at
+        if elapsed <= self._hold_seconds:
+            return self._last_good
+        if self._fade_seconds <= 0:
+            return scale_processed_alpha(self._last_good, 0.0)
+        ramp = (elapsed - self._hold_seconds) / self._fade_seconds
+        factor = max(0.0, 1.0 - ramp)
+        return scale_processed_alpha(self._last_good, factor)
 
 
 def _load_overlay_qt_modules() -> dict:
