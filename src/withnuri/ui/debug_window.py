@@ -2,6 +2,7 @@ import threading
 import time
 
 from withnuri.pipeline.debug_overlay import render_tracking_debug_overlay
+from withnuri.pipeline.diagnostics import PipelineDiagnosticsCollector
 from withnuri.pipeline.frames import ProcessedFrame
 from withnuri.pipeline.queue import LatestFrameQueue
 from withnuri.ui.windowing import (
@@ -90,6 +91,8 @@ def run_tracking_debug_preview(
     max_frames: int | None = None,
     sleep=time.sleep,
     idle_seconds: float = 0.005,
+    collect_diagnostics: bool = False,
+    clock=time.monotonic,
 ) -> PreviewResult:
     # Decode runs on its own thread and only ever hands the consumer the most
     # recent frame; if tracking/inference is slower than decode, intermediate
@@ -99,12 +102,17 @@ def run_tracking_debug_preview(
     stop = threading.Event()
     producer_error: list[BaseException] = []
     frame_iter = decoder.iter_frames()
+    diagnostics = (
+        PipelineDiagnosticsCollector(clock=clock) if collect_diagnostics else None
+    )
 
     def produce() -> None:
         try:
             for raw_frame in frame_iter:
                 if stop.is_set():
                     break
+                if diagnostics is not None:
+                    diagnostics.record_decoded_frame()
                 queue.put(raw_frame)
         except BaseException as exc:  # surfaced to the consumer after join
             producer_error.append(exc)
@@ -131,13 +139,32 @@ def run_tracking_debug_preview(
                         break
                     sleep(idle_seconds)
                     continue
+                processing_started_at = clock()
                 tracking = tracker.track(raw_frame)
+                inference_seconds = clock() - processing_started_at
                 debug_frame = render_tracking_debug_overlay(raw_frame, tracking)
+                render_seconds = clock() - processing_started_at - inference_seconds
+                present_started_at = clock()
                 window.show_frame(debug_frame)
+                present_seconds = clock() - present_started_at
                 frames_rendered += 1
-                last_frame_visible = bool(tracking.tracks)
+                last_frame_visible = any(track.detected for track in tracking.tracks)
                 if last_frame_visible:
                     visible_frame_count += 1
+                if diagnostics is not None:
+                    diagnostics.record_processed_frame(
+                        queue_delay_seconds=processing_started_at
+                        - raw_frame.timestamp_seconds,
+                        inference_seconds=inference_seconds,
+                        render_seconds=render_seconds,
+                        present_seconds=present_seconds,
+                        detected=last_frame_visible,
+                        track_ids={
+                            track.track_id
+                            for track in tracking.tracks
+                            if track.detected and track.track_id is not None
+                        },
+                    )
                 if window.should_close():
                     break
                 if max_frames is not None and frames_rendered >= max_frames:
@@ -161,6 +188,11 @@ def run_tracking_debug_preview(
         interrupted=interrupted,
         visible_frame_count=visible_frame_count,
         last_frame_visible=last_frame_visible,
+        diagnostics=(
+            diagnostics.snapshot(dropped_frame_count=queue.dropped_frame_count)
+            if diagnostics is not None
+            else None
+        ),
     )
 
 

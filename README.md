@@ -13,6 +13,8 @@ python3 -m venv .venv
 
 Requires `ffmpeg`/`ffprobe` on your `PATH` (e.g. `brew install ffmpeg`).
 
+For copy-paste command examples, see [`COMMANDS.md`](COMMANDS.md).
+
 ## MediaMTX
 
 The config (`mediamtx.yml`) is in `WithNuri-tools/mediamtx/`, but the binary is not committed. Download it for your OS from https://github.com/bluenviron/mediamtx/releases, place the `mediamtx` binary next to `mediamtx.yml`, then run:
@@ -31,6 +33,17 @@ Find your computer's LAN IP (`ipconfig getifaddr en0`), then generate Moblin RTM
 ```
 
 Enter the printed RTMP URL in Moblin (RTMP protocol) and start streaming.
+
+## Stream from an MP4
+
+To test the same MediaMTX RTMP/RTSP path without Moblin, start MediaMTX and run:
+
+```bash
+.venv/bin/python -m withnuri mp4-rtmp --loop
+```
+
+This loops `tests/video/dogcam.mp4` into `rtmp://127.0.0.1:1935/nuri`.
+WithNuri reads the relayed stream at `rtsp://127.0.0.1:8554/nuri`.
 
 ## Tracking debug window
 

@@ -43,16 +43,27 @@ class YoloPetTracker:
     image_size: int | tuple[int, int] = 640
     tracker_config: str = "bytetrack.yaml"
     cache_frames: int = 8
+    device: str = "auto"
     model: Any | None = None
     model_loader: ModelLoader | None = None
     array_module: Any | None = None
+    torch_module: Any | None = None
     _cache: dict[int, PetTrackOverlay] = field(default_factory=dict, init=False)
+    _resolved_device: str | None = field(default=None, init=False)
 
     @property
     def display_name(self) -> str:
         model = self.model_name.removesuffix(".pt")
         tracker = _TRACKER_DISPLAY_NAMES.get(self.tracker_config, self.tracker_config)
         return f"{model} + {tracker}"
+
+    @property
+    def inference_device(self) -> str:
+        if self._resolved_device is None:
+            self._resolved_device = _resolve_inference_device(
+                self.device, torch_module=self._torch()
+            )
+        return self._resolved_device
 
     def track(self, frame: RawFrame) -> PetTrackingFrame:
         image = rgb24_to_bgr_array(frame, array_module=self._array_module())
@@ -64,6 +75,7 @@ class YoloPetTracker:
                 retina_masks=True,
                 persist=True,
                 tracker=self.tracker_config,
+                device=self.inference_device,
                 verbose=False,
             )
         except RuntimeError:
@@ -85,6 +97,15 @@ class YoloPetTracker:
             timestamp_seconds=frame.timestamp_seconds,
             tracks=tracks,
         )
+
+    def reset(self) -> None:
+        """Clear cached and ByteTrack state after an upstream reconnect."""
+        self._cache.clear()
+        predictor = getattr(self.model, "predictor", None)
+        for tracker in getattr(predictor, "trackers", ()):
+            reset = getattr(tracker, "reset", None)
+            if callable(reset):
+                reset()
 
     def _apply_cache(
         self, detected_tracks: list[PetTrackOverlay]
@@ -151,6 +172,37 @@ class YoloPetTracker:
                 "install WithNuri with the 'ml' extra to use YOLO tracking"
             ) from exc
         return np
+
+    def _torch(self) -> Any:
+        if self.torch_module is not None:
+            return self.torch_module
+        try:
+            import torch
+        except ImportError as exc:
+            raise YoloTrackingDependencyMissing(
+                "install WithNuri with the 'ml' extra to use YOLO tracking"
+            ) from exc
+        return torch
+
+
+def _resolve_inference_device(requested: str, *, torch_module: Any) -> str:
+    device = requested.lower().strip()
+    if device not in {"auto", "cpu", "mps", "cuda"}:
+        raise ValueError("device must be one of: auto, cpu, mps, cuda")
+    if device == "cpu":
+        return "cpu"
+    if device == "cuda":
+        if not torch_module.cuda.is_available():
+            raise RuntimeError("CUDA was requested but is not available")
+        return "cuda"
+    mps_available = torch_module.backends.mps.is_available()
+    if device == "mps":
+        if not mps_available:
+            raise RuntimeError("MPS was requested but is not available")
+        return "mps"
+    if torch_module.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
 
 def rgb24_to_bgr_array(frame: RawFrame, *, array_module: Any):

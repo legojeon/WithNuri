@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from withnuri.pipeline.diagnostics import PipelineDiagnostics
 from withnuri.pipeline.frames import ProcessedFrame
 
 
@@ -9,6 +10,7 @@ class PreviewResult:
     interrupted: bool = False
     visible_frame_count: int = 0
     last_frame_visible: bool = False
+    diagnostics: PipelineDiagnostics | None = None
 
 
 class PreviewWindowUnavailable(RuntimeError):
