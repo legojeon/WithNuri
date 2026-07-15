@@ -4,11 +4,13 @@ from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum
 import signal
+import sys
 
 from withnuri.pipeline.frames import ProcessedFrame
 from withnuri.pipeline.inference_gate import IdleInferenceGate
 from withnuri.pipeline.diagnostics import PipelineDiagnosticsCollector
 from withnuri.pipeline.display_stabilizer import PetDisplayStabilizer
+from withnuri.pipeline.debug_overlay import render_tracking_debug_overlay
 from withnuri.pipeline.matte import render_pet_matte, scale_processed_alpha
 from withnuri.pipeline.mask_smoothing import TemporalMaskSmoother
 from withnuri.pipeline.pet_crop import PetCropController
@@ -20,6 +22,7 @@ from withnuri.ui.windowing import (
     PreviewWindowUnavailable,
     resize_processed_frame,
 )
+from withnuri.ui.debug_window import QtDebugWindow
 
 
 class OverlayWindowUnavailable(PreviewWindowUnavailable):
@@ -44,6 +47,52 @@ class _NoopPlacementStore:
 
     def clear(self) -> None:
         return None
+
+
+class OverlayDebugPreview:
+    """Switches between the transparent pet output and a live debug window."""
+
+    def __init__(self, overlay_window, *, debug_window_factory=QtDebugWindow) -> None:
+        self._overlay_window = overlay_window
+        self._debug_window_factory = debug_window_factory
+        self._debug_window = None
+
+    @property
+    def is_enabled(self) -> bool:
+        if self._debug_window is not None and self._debug_window.should_close():
+            self.disable()
+        return self._debug_window is not None
+
+    def toggle(self) -> None:
+        if self.is_enabled:
+            self.disable()
+        else:
+            window_kwargs = {
+                "title": "WithNuri Debug Preview",
+                "always_on_top": True,
+            }
+            output_geometry = getattr(self._overlay_window, "output_geometry", None)
+            if isinstance(output_geometry, tuple) and len(output_geometry) == 4:
+                x, y, width, height = output_geometry
+                window_kwargs.update(
+                    display_x=x,
+                    display_y=y,
+                    display_width=width,
+                    display_height=height,
+                )
+            self._debug_window = self._debug_window_factory(**window_kwargs)
+            self._overlay_window.set_output_visible(False)
+
+    def present(self, raw_frame, tracking) -> None:
+        if not self.is_enabled:
+            return
+        self._debug_window.show_frame(render_tracking_debug_overlay(raw_frame, tracking))
+
+    def disable(self) -> None:
+        if self._debug_window is not None:
+            self._debug_window.close()
+            self._debug_window = None
+        self._overlay_window.set_output_visible(True)
 
 
 class OverlayWindow:
@@ -77,6 +126,7 @@ class OverlayWindow:
             OverlayPlacementStore() if qt_modules is None else _NoopPlacementStore()
         )
         self._closed = False
+        self._output_visible = True
         self._last_image = None
         self._last_frame: ProcessedFrame | None = None
         self._pixmap = None
@@ -133,23 +183,15 @@ class OverlayWindow:
 
         self._widget = _DraggableWidget(self)
         self._widget.setWindowTitle("WithNuri")
+        window_type = getattr(self._qt, "Window", 0)
         self._widget.setWindowFlags(
-            self._qt.FramelessWindowHint
+            window_type
+            | self._qt.FramelessWindowHint
             | self._qt.WindowStaysOnTopHint
-            | self._qt.Tool
             | self._qt.WindowTransparentForInput
         )
         self._widget.setAttribute(self._qt.WA_TranslucentBackground, True)
         self._widget.setAttribute(self._qt.WA_NoSystemBackground, True)
-        # Qt::Tool is implemented as an NSPanel on macOS. Without this
-        # attribute macOS hides the panel as soon as another app becomes
-        # active, which makes the click-through overlay disappear after a
-        # click on the window behind it.
-        mac_always_show_tool = getattr(
-            self._qt, "WA_MacAlwaysShowToolWindow", None
-        )
-        if mac_always_show_tool is not None:
-            self._widget.setAttribute(mac_always_show_tool, True)
 
         self._widget.resize(panel_width, panel_height)
         self._screen_geometry = screen_geometry
@@ -160,6 +202,24 @@ class OverlayWindow:
     @property
     def widget(self):
         return self._widget
+
+    @property
+    def output_size(self) -> tuple[int, int]:
+        """Actual visible panel dimensions for an equivalent debug preview."""
+        size = getattr(self._widget, "size", None)
+        if callable(size):
+            current = size()
+            return (current.width(), current.height())
+        return (self._panel_width, self._panel_height)
+
+    @property
+    def output_geometry(self) -> tuple[int, int, int, int]:
+        geometry = getattr(self._widget, "geometry", None)
+        if callable(geometry):
+            rect = geometry()
+            return (rect.x(), rect.y(), rect.width(), rect.height())
+        width, height = self.output_size
+        return (self._position[0], self._position[1], width, height)
 
     def move_to_corner(self) -> None:
         geometry = self._screen_geometry or self._primary_geometry()
@@ -193,6 +253,8 @@ class OverlayWindow:
     def should_close(self) -> bool:
         if self._closed:
             return True
+        if not self._output_visible:
+            return False
         return not self._widget.isVisible()
 
     def close(self) -> None:
@@ -201,6 +263,16 @@ class OverlayWindow:
         self._closed = True
         self._save_placement()
         self._widget.close()
+
+    def set_output_visible(self, visible: bool) -> None:
+        if visible == self._output_visible:
+            return
+        self._output_visible = visible
+        if visible:
+            self._widget.show()
+            set_macos_overlay_click_through(self, enabled=self.is_click_through())
+        else:
+            self._widget.hide()
 
     def is_click_through(self) -> bool:
         return self._mode is OverlayInteractionMode.OVERLAY
@@ -234,6 +306,13 @@ class OverlayWindow:
         else:
             self.end_pointer_interaction()
             self._widget.update()
+            # The Arrange guide uses translucent pixels. On a macOS
+            # translucent top-level surface, a deferred update can leave that
+            # backing-store content visible until a later video frame arrives.
+            # Paint the fully-cleared Overlay surface immediately instead.
+            repaint = getattr(self._widget, "repaint", None)
+            if callable(repaint):
+                repaint()
             self._save_placement()
 
     def is_arrange_mode(self) -> bool:
@@ -347,9 +426,9 @@ class OverlayWindow:
             set_window_flag(self._qt.WindowTransparentForInput, enabled)
         else:
             base = (
-                self._qt.FramelessWindowHint
+                getattr(self._qt, "Window", 0)
+                | self._qt.FramelessWindowHint
                 | self._qt.WindowStaysOnTopHint
-                | self._qt.Tool
             )
             if enabled:
                 base |= self._qt.WindowTransparentForInput
@@ -427,18 +506,22 @@ class OverlayWindow:
         painter = self._qpainter(widget)
         try:
             if self._qcolor is not None:
-                source = getattr(self._qpainter, "CompositionMode_Source", None)
-                source_over = getattr(
-                    self._qpainter, "CompositionMode_SourceOver", None
+                clear = self._painter_composition_mode("CompositionMode_Clear")
+                source = self._painter_composition_mode("CompositionMode_Source")
+                source_over = self._painter_composition_mode(
+                    "CompositionMode_SourceOver"
                 )
-                composition_mode = getattr(self._qpainter, "CompositionMode", None)
-                if source is None and composition_mode is not None:
-                    source = composition_mode.CompositionMode_Source
-                if source_over is None and composition_mode is not None:
-                    source_over = composition_mode.CompositionMode_SourceOver
-                if source is not None and source_over is not None:
+                if clear is not None:
+                    # Clear ignores the brush alpha and therefore reliably
+                    # erases stale Arrange-mode pixels on a transparent
+                    # backing store. Source + transparent is only a fallback
+                    # for minimal/fake QPainter implementations.
+                    painter.setCompositionMode(clear)
+                    painter.fillRect(widget.rect(), self._qcolor(0, 0, 0, 0))
+                elif source is not None:
                     painter.setCompositionMode(source)
                     painter.fillRect(widget.rect(), self._qcolor(0, 0, 0, 0))
+                if source_over is not None:
                     painter.setCompositionMode(source_over)
             if self.is_arrange_mode() and self._qcolor is not None:
                 painter.fillRect(widget.rect(), self._qcolor(20, 24, 28, 88))
@@ -453,6 +536,13 @@ class OverlayWindow:
                 painter.drawRoundedRect(widget.rect().adjusted(1, 1, -2, -2), 8, 8)
         finally:
             painter.end()
+
+    def _painter_composition_mode(self, name: str):
+        mode = getattr(self._qpainter, name, None)
+        if mode is not None:
+            return mode
+        enum = getattr(self._qpainter, "CompositionMode", None)
+        return getattr(enum, name, None) if enum is not None else None
 
     def _primary_geometry(self) -> tuple[int, int, int, int]:
         screen = self._app.primaryScreen()
@@ -473,6 +563,10 @@ class FadeController:
         self._clock = clock
         self._last_good: ProcessedFrame | None = None
         self._lost_at: float | None = None
+
+    def reset(self) -> None:
+        self._last_good = None
+        self._lost_at = None
 
     def display_frame(self, fresh: ProcessedFrame, has_pet: bool) -> ProcessedFrame:
         if has_pet:
@@ -552,23 +646,27 @@ class _OverlayTray:
         menu,
         status_action,
         quality_action,
+        debug_action,
         arrange_action,
         reset_placement_action,
         quit_action,
         window,
         on_quit,
         stream_status,
+        debug_preview,
     ):
         self._icon = icon
         self._menu = menu
         self._status_action = status_action
         self._quality_action = quality_action
+        self._debug_action = debug_action
         self._arrange_action = arrange_action
         self._reset_placement_action = reset_placement_action
         self._quit_action = quit_action
         self._window = window
         self._on_quit = on_quit
         self._stream_status = stream_status
+        self._debug_preview = debug_preview
         self._quitting = False
 
     @property
@@ -604,6 +702,15 @@ class _OverlayTray:
         label = self._stream_status.label()
         self._status_action.setText(f"Stream: {label}")
         self._icon.setToolTip(f"WithNuri — {label}")
+        self._debug_action.setText(
+            "Hide Debug Preview"
+            if self._debug_preview.is_enabled
+            else "Show Debug Preview"
+        )
+
+    def toggle_debug_preview(self) -> None:
+        self._debug_preview.toggle()
+        self.refresh_status()
 
     def reset_placement(self) -> None:
         reset = getattr(self._window, "reset_placement", None)
@@ -640,12 +747,14 @@ def build_overlay_tray(
     on_quit,
     quality_profile: str = "balanced",
     stream_status: OverlayStreamStatus | None = None,
+    debug_preview: OverlayDebugPreview | None = None,
     qt_modules: dict | None = None,
 ):
     modules = qt_modules or _load_tray_qt_modules()
     icon = modules["QSystemTrayIcon"](_make_tray_icon(modules))
     menu = modules["QMenu"]()
     stream_status = stream_status or OverlayStreamStatus()
+    debug_preview = debug_preview or OverlayDebugPreview(window)
 
     status_action = modules["QAction"]("Stream: Connecting")
     status_action.setEnabled(False)
@@ -653,12 +762,15 @@ def build_overlay_tray(
         f"Quality: {_quality_profile_label(quality_profile)} (restart to change)"
     )
     quality_action.setEnabled(False)
+    debug_action = modules["QAction"]("Show Debug Preview")
     arrange_action = modules["QAction"]("Arrange Overlay…")
     reset_placement_action = modules["QAction"]("Reset Overlay Placement")
     quit_action = modules["QAction"]("Quit")
 
     menu.addAction(status_action)
     menu.addAction(quality_action)
+    menu.addSeparator()
+    menu.addAction(debug_action)
     menu.addSeparator()
     menu.addAction(arrange_action)
     menu.addAction(reset_placement_action)
@@ -672,14 +784,17 @@ def build_overlay_tray(
         menu,
         status_action,
         quality_action,
+        debug_action,
         arrange_action,
         reset_placement_action,
         quit_action,
         window,
         on_quit,
         stream_status,
+        debug_preview,
     )
     tray.refresh_status()
+    debug_action.triggered.connect(lambda *_: tray.toggle_debug_preview())
     arrange_action.triggered.connect(lambda *_: tray.toggle_arrange_mode())
     reset_placement_action.triggered.connect(lambda *_: tray.reset_placement())
     quit_action.triggered.connect(lambda *_: tray.quit())
@@ -691,12 +806,11 @@ def _quality_profile_label(profile: str) -> str:
 
 
 def apply_macos_overlay_chrome(window, *, appkit="__auto__") -> bool:
-    if appkit == "__auto__":
-        appkit = _load_appkit()
-    if appkit is None:
+    """Apply persistent native properties without changing app activation."""
+    native = _macos_native_window(window, appkit=appkit)
+    if native is None:
         return False
-    view = appkit.view_for(int(window.widget.winId()))
-    ns_window = view.window()
+    ns_window, appkit = native
     # Floating stays above ordinary application windows but below status-item
     # menus. NSStatusWindowLevel can visually/input-wise compete with the menu
     # bar popover on macOS.
@@ -707,6 +821,43 @@ def apply_macos_overlay_chrome(window, *, appkit="__auto__") -> bool:
     return set_macos_overlay_click_through(
         window, enabled=window.is_click_through(), appkit=appkit
     )
+
+
+def bring_macos_overlay_to_front(window, *, appkit="__auto__") -> bool:
+    """Order a visible overlay after Qt has entered its event loop.
+
+    This runs from a queued callback after the source dialog has closed and
+    Qt has finished showing the normal top-level transparent window.
+    """
+    widget = window.widget
+    show = getattr(widget, "show", None)
+    if callable(show):
+        show()
+    raise_window = getattr(widget, "raise_", None)
+    if callable(raise_window):
+        raise_window()
+
+    native = _macos_native_window(window, appkit=appkit)
+    if native is None:
+        return False
+    ns_window, appkit = native
+    apply_macos_overlay_chrome(window, appkit=appkit)
+    order_front_regardless = getattr(ns_window, "orderFrontRegardless", None)
+    if callable(order_front_regardless):
+        order_front_regardless()
+    return True
+
+
+def _macos_native_window(window, *, appkit="__auto__"):
+    if appkit == "__auto__":
+        appkit = _load_appkit()
+    if appkit is None:
+        return None
+    view = appkit.view_for(int(window.widget.winId()))
+    ns_window = view.window()
+    if ns_window is None:
+        raise RuntimeError("WithNuri overlay has no native macOS window")
+    return ns_window, appkit
 
 
 def set_macos_overlay_click_through(
@@ -763,25 +914,34 @@ def run_pet_overlay_qt(
     from PySide6.QtCore import QTimer
 
     app = window._app
+    # Debug Preview temporarily hides the transparent output. Closing that
+    # preview must return to the overlay, not let Qt quit because it believes
+    # the last visible top-level window was closed. Explicit Quit remains the
+    # tray action's responsibility.
+    _keep_qt_running_without_visible_windows(app)
 
-    try:
-        apply_macos_overlay_chrome(window)
-    except Exception:
-        pass
+    _apply_overlay_chrome_safely(window)
 
     # Build the system tray (Quit + arrange-mode toggle) and tie its lifetime
     # to the window so Qt does not garbage-collect the QSystemTrayIcon, which
     # would silently drop the menu. on_quit stops the event loop.
     stream_status = OverlayStreamStatus()
+    debug_preview = OverlayDebugPreview(window)
     window._tray = build_overlay_tray(
         window,
         on_quit=app.quit,
         quality_profile=quality_profile,
         stream_status=stream_status,
+        debug_preview=debug_preview,
     )
 
     def app_runner(tick):
         timer = QTimer()
+
+        # The source dialog closes before this event loop begins. Reassert the
+        # normal-window level after Qt completes that modal transition.
+        QTimer.singleShot(0, lambda: _bring_overlay_to_front_safely(window))
+        QTimer.singleShot(150, lambda: _bring_overlay_to_front_safely(window))
 
         def on_timeout():
             keep_running = tick()
@@ -819,6 +979,7 @@ def run_pet_overlay_qt(
             app_runner=app_runner,
             fade=fade,
             stream_status=stream_status,
+            debug_preview=debug_preview,
             **kwargs,
         ),
         quit_app=app.quit,
@@ -843,6 +1004,28 @@ def _run_with_sigint_handler(run, *, quit_app, signal_module=signal):
     return result, interrupted.is_set()
 
 
+def _keep_qt_running_without_visible_windows(app) -> None:
+    set_quit_on_last_window_closed = getattr(app, "setQuitOnLastWindowClosed", None)
+    if callable(set_quit_on_last_window_closed):
+        set_quit_on_last_window_closed(False)
+
+
+def _apply_overlay_chrome_safely(window) -> bool:
+    try:
+        return apply_macos_overlay_chrome(window)
+    except Exception as exc:
+        print(f"Overlay native chrome setup failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _bring_overlay_to_front_safely(window) -> bool:
+    try:
+        return bring_macos_overlay_to_front(window)
+    except Exception as exc:
+        print(f"Overlay native front-order failed: {exc}", file=sys.stderr)
+        return False
+
+
 def run_pet_overlay(
     decoder,
     *,
@@ -861,6 +1044,7 @@ def run_pet_overlay(
     crop_controller: PetCropController | None = None,
     inference_gate: IdleInferenceGate | None = None,
     stream_status: OverlayStreamStatus | None = None,
+    debug_preview: OverlayDebugPreview | None = None,
     reconnect_delay_seconds: float | None = None,
     on_stream_status: Callable[[str, str | None], None] | None = None,
 ) -> PreviewResult:
@@ -944,9 +1128,16 @@ def run_pet_overlay(
 
     state = {"frames_rendered": 0, "visible": 0, "last_visible": False}
     last_reconnect_present_at: float | None = None
+    debug_mode_active = False
+
+    def reset_for_output_mode_switch() -> None:
+        for component in (renderer, crop_controller, fade):
+            reset = getattr(component, "reset", None)
+            if callable(reset):
+                reset()
 
     def tick() -> bool:
-        nonlocal last_reconnect_present_at
+        nonlocal debug_mode_active, last_reconnect_present_at
         if window.should_close():
             stop.set()
             return False
@@ -965,7 +1156,8 @@ def run_pet_overlay(
                 if frame_to_show is not None:
                     if crop_controller is not None:
                         frame_to_show = crop_controller.crop(frame_to_show, [])
-                    window.show_frame(frame_to_show)
+                    if debug_preview is None or not debug_preview.is_enabled:
+                        window.show_frame(frame_to_show)
                 last_reconnect_present_at = now
             if stop.is_set():
                 return False
@@ -987,24 +1179,31 @@ def run_pet_overlay(
         raw_tracking = tracker.track(raw_frame)
         inference_seconds = clock() - processing_started_at
         tracking = stabilizer.stabilize(raw_tracking)
+        debug_enabled = debug_preview is not None and debug_preview.is_enabled
+        if debug_enabled != debug_mode_active:
+            reset_for_output_mode_switch()
+            debug_mode_active = debug_enabled
+        if debug_enabled:
+            debug_preview.present(raw_frame, tracking)
         if inference_gate is not None:
             inference_gate.record_inference(
                 timestamp_seconds=raw_frame.timestamp_seconds,
                 pet_is_active=any(track.detected for track in raw_tracking.tracks)
                 or bool(tracking.tracks),
             )
-        fresh = renderer(raw_frame, tracking, feather_radius=feather_radius)
-        # Cached tracks deliberately retain their identity but do not represent
-        # a current segmentation. Start the grace-period/fade immediately when
-        # no fresh pet mask was detected, rather than drawing stale masks over
-        # the latest camera frame.
         has_pet = any(track.detected for track in tracking.tracks)
-        frame_to_show = fade.display_frame(fresh, has_pet) if fade else fresh
-        if crop_controller is not None:
-            frame_to_show = crop_controller.crop(frame_to_show, tracking.tracks)
-        render_seconds = clock() - processing_started_at - inference_seconds
         present_started_at = clock()
-        window.show_frame(frame_to_show)
+        if not debug_enabled:
+            fresh = renderer(raw_frame, tracking, feather_radius=feather_radius)
+            # Cached tracks deliberately retain their identity but do not represent
+            # a current segmentation. Start the grace-period/fade immediately when
+            # no fresh pet mask was detected, rather than drawing stale masks over
+            # the latest camera frame.
+            frame_to_show = fade.display_frame(fresh, has_pet) if fade else fresh
+            if crop_controller is not None:
+                frame_to_show = crop_controller.crop(frame_to_show, tracking.tracks)
+            window.show_frame(frame_to_show)
+        render_seconds = clock() - processing_started_at - inference_seconds
         present_seconds = clock() - present_started_at
         state["frames_rendered"] += 1
         state["last_visible"] = has_pet

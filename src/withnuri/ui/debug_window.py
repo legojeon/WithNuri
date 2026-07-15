@@ -22,6 +22,8 @@ class QtDebugWindow:
         *,
         title: str = "WithNuri Debug Overlay",
         always_on_top: bool = False,
+        display_x: int | None = None,
+        display_y: int | None = None,
         display_width: int | None = None,
         display_height: int | None = None,
         qt_modules: dict | None = None,
@@ -45,10 +47,30 @@ class QtDebugWindow:
         if always_on_top:
             self._widget.setWindowFlags(self._qt.WindowStaysOnTopHint)
         self._label = self._qlabel()
+        # Debug preview is intentionally an ordinary resizable window. Ignore
+        # the pixmap's natural size so both enlargement and shrinking scale the
+        # diagnostic frame instead of constraining the top-level widget.
+        set_scaled_contents = getattr(self._label, "setScaledContents", None)
+        if callable(set_scaled_contents):
+            set_scaled_contents(True)
+        set_minimum_size = getattr(self._label, "setMinimumSize", None)
+        if callable(set_minimum_size):
+            set_minimum_size(0, 0)
+        size_policy = modules.get("QSizePolicy")
+        set_size_policy = getattr(self._label, "setSizePolicy", None)
+        if size_policy is not None and callable(set_size_policy):
+            ignored = getattr(size_policy, "Ignored", None)
+            if ignored is None:
+                ignored = size_policy.Policy.Ignored
+            set_size_policy(ignored, ignored)
         layout = self._qvboxlayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
         self._widget.setLayout(layout)
+        if display_width is not None and display_height is not None:
+            self._widget.resize(display_width, display_height)
+        if display_x is not None and display_y is not None:
+            self._widget.move(display_x, display_y)
         self._widget.show()
 
     def show_frame(self, frame: ProcessedFrame) -> None:
@@ -66,7 +88,6 @@ class QtDebugWindow:
         ).copy()
         self._last_image = image
         self._label.setPixmap(self._qpixmap.fromImage(image))
-        self._app.processEvents()
 
     def should_close(self) -> bool:
         # The widget stops being visible when the user closes it through the
@@ -80,7 +101,6 @@ class QtDebugWindow:
             return
         self._closed = True
         self._widget.close()
-        self._app.processEvents()
 
 
 def run_tracking_debug_preview(
@@ -200,13 +220,20 @@ def _load_qt_modules() -> dict:
     try:
         from PySide6.QtCore import Qt
         from PySide6.QtGui import QImage, QPixmap
-        from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+        from PySide6.QtWidgets import (
+            QApplication,
+            QLabel,
+            QSizePolicy,
+            QVBoxLayout,
+            QWidget,
+        )
     except ImportError as exc:
         raise QtDebugWindowUnavailable("PySide6 is required for debug windows") from exc
     return {
         "QApplication": QApplication,
         "QWidget": QWidget,
         "QLabel": QLabel,
+        "QSizePolicy": QSizePolicy,
         "QVBoxLayout": QVBoxLayout,
         "QImage": QImage,
         "QPixmap": QPixmap,

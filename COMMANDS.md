@@ -147,6 +147,26 @@ Detailed benchmark results and the rationale for the default profile are in
 The tray-control UX direction is documented in
 [`docs/overlay-control-ux.md`](docs/overlay-control-ux.md).
 
+### Demo app source picker
+
+For a terminal-free overlay launch after the app is packaged, use the `demo`
+entry point. It opens a small source picker, remembers up to five recent RTSP
+addresses, and then starts the same overlay pipeline as `overlay`. Its default
+decode size is 1280x720 so the demo does not silently use the small probe-size
+default.
+
+```bash
+.venv/bin/python -m withnuri demo
+```
+
+Choose **Local demo relay** after starting the looping MP4 publisher, or enter
+the phone stream address (for example `rtsp://<LAN-IP>:8554/nuri`). Pass an
+address to pre-fill the dialog when testing:
+
+```bash
+.venv/bin/python -m withnuri demo --url rtsp://127.0.0.1:8554/nuri
+```
+
 ### Recommended balanced preset
 
 The following is the current balanced preset for the MacBook Air test setup.

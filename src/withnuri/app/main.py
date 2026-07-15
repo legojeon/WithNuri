@@ -13,6 +13,7 @@ from withnuri.streaming.decoder import DecodeToolMissing, FfmpegFrameDecoder
 from withnuri.streaming.phone_profiles import MoblinRtmpProfile
 from withnuri.streaming.probe import ProbeToolMissing, probe_stream
 from withnuri.streaming.stream_check import check_stream
+from withnuri.ui.source_dialog import choose_overlay_source
 from withnuri.overlay.window import (
     FadeController,
     OverlayWindow,
@@ -43,11 +44,12 @@ def main(
     debug_runner=run_tracking_debug_preview,
     overlay_window_factory=OverlayWindow,
     overlay_runner=run_pet_overlay_qt,
+    source_selector=choose_overlay_source,
     clock=time.monotonic,
 ) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command == "overlay":
+    if args.command in {"overlay", "demo"}:
         _apply_overlay_quality_profile(args)
 
     if args.command == "moblin-rtmp":
@@ -68,7 +70,12 @@ def main(
             debug_window_factory=debug_window_factory,
             debug_runner=debug_runner,
         )
-    if args.command == "overlay":
+    if args.command == "demo":
+        url = source_selector(args.url)
+        if url is None:
+            return 0
+        args.url = url
+    if args.command in {"overlay", "demo"}:
         return _run_overlay(
             args,
             decoder_factory=decoder_factory,
@@ -167,6 +174,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show the transparent always-on-top pet overlay.",
     )
     overlay_parser.add_argument("url")
+    _add_overlay_options(overlay_parser)
+
+    demo_parser = subparsers.add_parser(
+        "demo",
+        help="Choose a saved RTSP source, then show the pet overlay.",
+    )
+    demo_parser.add_argument(
+        "--url",
+        help="Pre-fill the launch-time source picker with an RTSP address.",
+    )
+    _add_overlay_options(demo_parser)
+    # The generic CLI helpers use a tiny frame for probes. A demo should match
+    # the established 1280x720 overlay command instead of silently upscaling
+    # a 320x180 decode.
+    demo_parser.set_defaults(width=1280, height=720)
+
+    return parser
+
+
+def _add_overlay_options(overlay_parser: argparse.ArgumentParser) -> None:
     _add_frame_size_args(overlay_parser)
     overlay_parser.add_argument("--panel-width", type=int, default=480)
     overlay_parser.add_argument("--panel-height", type=int, default=270)
@@ -208,9 +235,6 @@ def _build_parser() -> argparse.ArgumentParser:
     overlay_parser.add_argument(
         "--diagnostics", action="store_true", help="Print pipeline timing and tracking stats."
     )
-
-    return parser
-
 
 def _add_frame_size_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--width", type=int, default=320)
