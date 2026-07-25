@@ -66,7 +66,7 @@ packaging, see [COMMANDS.md](COMMANDS.md).
 2. Launch `withnuri demo` or the packaged app and choose **Receive Moblin**.
 
    <p align="center">
-     <img src="screenshot/set_mode.png" alt="WithNuri source picker set to Receive Moblin with the generated RTMP publish address" width="900">
+     <img src="screenshot/set_mode.png" alt="WithNuri source picker set to Receive Moblin with the generated RTMP publish address" width="450">
    </p>
 
 3. Copy the exact address shown in the dialog, for example:
@@ -124,7 +124,7 @@ Use the debug view when inspecting segmentation boundaries and tracker IDs:
 ```
 
 <p align="center">
-  <img src="screenshot/debug_view.png" alt="WithNuri debug view with a pet segmentation mask and tracker bounding box" width="480">
+  <img src="screenshot/debug_view.png" alt="WithNuri debug view with a pet segmentation mask and tracker bounding box" width="240">
 </p>
 
 Quality presets:
