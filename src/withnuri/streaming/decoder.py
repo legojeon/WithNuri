@@ -4,6 +4,7 @@ import subprocess
 import time
 
 from withnuri.pipeline.frames import RawFrame
+from withnuri.runtime import default_ffmpeg_binary
 
 
 PopenFactory = Callable[..., subprocess.Popen[bytes]]
@@ -19,7 +20,7 @@ class FfmpegFrameDecoder:
     width: int = 320
     height: int = 180
     output_fps: float | None = None
-    ffmpeg_binary: str = "ffmpeg"
+    ffmpeg_binary: str = field(default_factory=default_ffmpeg_binary)
     read_timeout_seconds: int = 10
     reraise_interrupts_on_cleanup: bool = False
     popen: PopenFactory = subprocess.Popen

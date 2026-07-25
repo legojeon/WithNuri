@@ -4,16 +4,22 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from urllib.parse import urlsplit
 
 from withnuri.pipeline.yolo_tracker import (
     YoloPetTracker,
     YoloTrackingDependencyMissing,
 )
 from withnuri.streaming.decoder import DecodeToolMissing, FfmpegFrameDecoder
+from withnuri.streaming.local_demo import (
+    LocalDemoSession,
+    LocalDemoUnavailable,
+    LocalRelaySession,
+)
 from withnuri.streaming.phone_profiles import MoblinRtmpProfile
 from withnuri.streaming.probe import ProbeToolMissing, probe_stream
 from withnuri.streaming.stream_check import check_stream
-from withnuri.ui.source_dialog import choose_overlay_source
+from withnuri.ui.source_dialog import OverlayLaunchSelection, choose_overlay_source
 from withnuri.overlay.window import (
     FadeController,
     OverlayWindow,
@@ -45,10 +51,28 @@ def main(
     overlay_window_factory=OverlayWindow,
     overlay_runner=run_pet_overlay_qt,
     source_selector=choose_overlay_source,
+    local_demo_session_factory=LocalDemoSession,
+    local_relay_session_factory=LocalRelaySession,
     clock=time.monotonic,
 ) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "demo":
+        selection = source_selector(args.url, args.quality)
+        if selection is None:
+            return 0
+        if isinstance(selection, OverlayLaunchSelection):
+            args.url = selection.url
+            args.quality = selection.quality
+            args.start_local_demo = selection.start_local_demo
+            args.start_local_relay = selection.start_local_relay
+        else:  # Keeps injectable legacy selectors simple for tests/tools.
+            args.url = selection
+            args.quality = args.quality or "balanced"
+            args.start_local_demo = False
+            args.start_local_relay = False
+
     if args.command in {"overlay", "demo"}:
         _apply_overlay_quality_profile(args)
 
@@ -70,12 +94,25 @@ def main(
             debug_window_factory=debug_window_factory,
             debug_runner=debug_runner,
         )
-    if args.command == "demo":
-        url = source_selector(args.url)
-        if url is None:
-            return 0
-        args.url = url
     if args.command in {"overlay", "demo"}:
+        if args.command == "demo" and args.start_local_demo:
+            return _run_local_demo_overlay(
+                args,
+                decoder_factory=decoder_factory,
+                yolo_tracker_factory=yolo_tracker_factory,
+                overlay_window_factory=overlay_window_factory,
+                overlay_runner=overlay_runner,
+                session_factory=local_demo_session_factory,
+            )
+        if args.command == "demo" and args.start_local_relay:
+            return _run_local_relay_overlay(
+                args,
+                decoder_factory=decoder_factory,
+                yolo_tracker_factory=yolo_tracker_factory,
+                overlay_window_factory=overlay_window_factory,
+                overlay_runner=overlay_runner,
+                session_factory=local_relay_session_factory,
+            )
         return _run_overlay(
             args,
             decoder_factory=decoder_factory,
@@ -174,7 +211,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show the transparent always-on-top pet overlay.",
     )
     overlay_parser.add_argument("url")
-    _add_overlay_options(overlay_parser)
+    _add_overlay_options(overlay_parser, quality_default="balanced")
 
     demo_parser = subparsers.add_parser(
         "demo",
@@ -184,7 +221,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--url",
         help="Pre-fill the launch-time source picker with an RTSP address.",
     )
-    _add_overlay_options(demo_parser)
+    _add_overlay_options(demo_parser, quality_default=None)
     # The generic CLI helpers use a tiny frame for probes. A demo should match
     # the established 1280x720 overlay command instead of silently upscaling
     # a 320x180 decode.
@@ -193,13 +230,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_overlay_options(overlay_parser: argparse.ArgumentParser) -> None:
+def _add_overlay_options(
+    overlay_parser: argparse.ArgumentParser, *, quality_default: str | None
+) -> None:
     _add_frame_size_args(overlay_parser)
     overlay_parser.add_argument("--panel-width", type=int, default=480)
     overlay_parser.add_argument("--panel-height", type=int, default=270)
     overlay_parser.add_argument("--feather-radius", type=float, default=1.5)
     overlay_parser.add_argument(
-        "--quality", choices=tuple(_OVERLAY_QUALITY_PROFILES), default="balanced"
+        "--quality", choices=tuple(_OVERLAY_QUALITY_PROFILES), default=quality_default
     )
     overlay_parser.add_argument("--decode-fps", type=float)
     overlay_parser.add_argument("--max-frames", type=int)
@@ -539,6 +578,7 @@ def _run_overlay(
                 idle_fps=args.idle_inference_fps
             ),
             "quality_profile": args.quality,
+            "source_label": _overlay_source_label(args.url),
             "feather_radius": args.feather_radius,
             "max_frames": args.max_frames,
             "reconnect_delay_seconds": args.reconnect_delay_seconds,
@@ -573,6 +613,61 @@ def _run_overlay(
     return 130 if result.interrupted else 0
 
 
+def _run_local_demo_overlay(
+    args,
+    *,
+    decoder_factory,
+    yolo_tracker_factory,
+    overlay_window_factory,
+    overlay_runner,
+    session_factory,
+) -> int:
+    session = session_factory()
+    try:
+        print("Starting local demo stream.")
+        session.start()
+        return _run_overlay(
+            args,
+            decoder_factory=decoder_factory,
+            yolo_tracker_factory=yolo_tracker_factory,
+            overlay_window_factory=overlay_window_factory,
+            overlay_runner=overlay_runner,
+        )
+    except LocalDemoUnavailable as exc:
+        print(f"Local demo unavailable: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        session.stop()
+
+
+def _run_local_relay_overlay(
+    args,
+    *,
+    decoder_factory,
+    yolo_tracker_factory,
+    overlay_window_factory,
+    overlay_runner,
+    session_factory,
+) -> int:
+    """Run the overlay against a relay owned by this app, without a publisher."""
+    session = session_factory()
+    try:
+        print("Starting local Moblin relay. Waiting for the phone stream.")
+        session.start()
+        return _run_overlay(
+            args,
+            decoder_factory=decoder_factory,
+            yolo_tracker_factory=yolo_tracker_factory,
+            overlay_window_factory=overlay_window_factory,
+            overlay_runner=overlay_runner,
+        )
+    except LocalDemoUnavailable as exc:
+        print(f"Local relay unavailable: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        session.stop()
+
+
 def _overlay_stream_status_printer(*, reconnect_delay_seconds: float):
     def report(status: str, detail: str | None = None) -> None:
         if status == "reconnecting":
@@ -586,6 +681,18 @@ def _overlay_stream_status_printer(*, reconnect_delay_seconds: float):
             print("Stream reconnected.", flush=True)
 
     return report
+
+
+def _overlay_source_label(url: str) -> str:
+    """Keep the tray useful without exposing stream credentials."""
+    parsed = urlsplit(url)
+    host = parsed.hostname or parsed.netloc
+    path = parsed.path.lstrip("/")
+    if host in {"127.0.0.1", "localhost", "::1"} and path == "nuri":
+        return "Local relay"
+    if host and path:
+        return f"{host}/{path}"
+    return host or "Current stream"
 
 
 def _print_tracking_debug_result(

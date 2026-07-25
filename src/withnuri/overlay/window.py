@@ -15,6 +15,7 @@ from withnuri.pipeline.matte import render_pet_matte, scale_processed_alpha
 from withnuri.pipeline.mask_smoothing import TemporalMaskSmoother
 from withnuri.pipeline.pet_crop import PetCropController
 from withnuri.pipeline.queue import LatestFrameQueue
+from withnuri.runtime import resource_path
 from withnuri.streaming.decoder import DecodeToolMissing
 from withnuri.overlay.placement import OverlayPlacement, OverlayPlacementStore
 from withnuri.ui.windowing import (
@@ -633,10 +634,47 @@ class OverlayStreamStatus:
             suffix = f" ({self._detail})" if self._detail else ""
             return f"{self._state}{suffix}"
 
+    def is_live(self) -> bool:
+        with self._lock:
+            return self._state == "Live"
+
+    def hint(self) -> str:
+        with self._lock:
+            if self._state == "Connecting":
+                return "Waiting for the camera stream…"
+            if self._state == "Reconnecting":
+                return "Check MediaMTX and the camera publisher."
+            return ""
+
     def _set(self, state: str, detail: str | None = None) -> None:
         with self._lock:
             self._state = state
             self._detail = detail
+
+
+class OverlayPetStatus:
+    """Thread-safe display state that distinguishes stream and pet health."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._label = "Waiting for stream"
+
+    def set_searching(self) -> None:
+        self._set("Searching for pet…")
+
+    def set_detected(self, detected: bool) -> None:
+        self._set("Pet detected" if detected else "No pet detected")
+
+    def set_waiting_for_stream(self) -> None:
+        self._set("Waiting for stream")
+
+    def label(self) -> str:
+        with self._lock:
+            return self._label
+
+    def _set(self, label: str) -> None:
+        with self._lock:
+            self._label = label
 
 
 class _OverlayTray:
@@ -645,6 +683,9 @@ class _OverlayTray:
         icon,
         menu,
         status_action,
+        source_action,
+        pet_action,
+        hint_action,
         quality_action,
         debug_action,
         arrange_action,
@@ -653,11 +694,16 @@ class _OverlayTray:
         window,
         on_quit,
         stream_status,
+        pet_status,
+        source_label,
         debug_preview,
     ):
         self._icon = icon
         self._menu = menu
         self._status_action = status_action
+        self._source_action = source_action
+        self._pet_action = pet_action
+        self._hint_action = hint_action
         self._quality_action = quality_action
         self._debug_action = debug_action
         self._arrange_action = arrange_action
@@ -666,12 +712,19 @@ class _OverlayTray:
         self._window = window
         self._on_quit = on_quit
         self._stream_status = stream_status
+        self._pet_status = pet_status
+        self._source_label = source_label
         self._debug_preview = debug_preview
         self._quitting = False
 
     @property
     def icon(self):
         return self._icon
+
+    def show(self) -> None:
+        """Register the status item after Qt owns the running event loop."""
+        self._icon.show()
+        self.refresh_status()
 
     def toggle_arrange_mode(self) -> None:
         self.set_arrange_mode(not self._window_is_arranging())
@@ -701,7 +754,20 @@ class _OverlayTray:
     def refresh_status(self) -> None:
         label = self._stream_status.label()
         self._status_action.setText(f"Stream: {label}")
-        self._icon.setToolTip(f"WithNuri — {label}")
+        self._source_action.setText(f"Source: {self._source_label}")
+        pet_label = (
+            self._pet_status.label()
+            if self._stream_status.is_live()
+            else "Waiting for stream"
+        )
+        self._pet_action.setText(f"Pet: {pet_label}")
+        hint = self._stream_status.hint()
+        self._hint_action.setText(hint)
+        self._hint_action.setEnabled(bool(hint))
+        set_visible = getattr(self._hint_action, "setVisible", None)
+        if callable(set_visible):
+            set_visible(bool(hint))
+        self._icon.setToolTip(f"WithNuri — {label}; {pet_label}")
         self._debug_action.setText(
             "Hide Debug Preview"
             if self._debug_preview.is_enabled
@@ -731,8 +797,12 @@ class _OverlayTray:
 
 
 def _make_tray_icon(modules):
-    # A null QIcon renders as an invisible/blank slot in the menu bar, so draw a
-    # small solid swatch when the drawing classes are available. Injected fake
+    icon = modules["QIcon"](str(resource_path("assets/withnuri-tray.svg")))
+    is_null = getattr(icon, "isNull", None)
+    if not callable(is_null) or not is_null():
+        return icon
+
+    # Keep a visible fallback for incomplete Qt installations. Injected fake
     # qt_modules (tests) omit QPixmap/QColor and fall back to the empty icon.
     if "QPixmap" in modules and "QColor" in modules:
         pixmap = modules["QPixmap"](22, 22)
@@ -746,7 +816,9 @@ def build_overlay_tray(
     *,
     on_quit,
     quality_profile: str = "balanced",
+    source_label: str = "Current source",
     stream_status: OverlayStreamStatus | None = None,
+    pet_status: OverlayPetStatus | None = None,
     debug_preview: OverlayDebugPreview | None = None,
     qt_modules: dict | None = None,
 ):
@@ -754,12 +826,19 @@ def build_overlay_tray(
     icon = modules["QSystemTrayIcon"](_make_tray_icon(modules))
     menu = modules["QMenu"]()
     stream_status = stream_status or OverlayStreamStatus()
+    pet_status = pet_status or OverlayPetStatus()
     debug_preview = debug_preview or OverlayDebugPreview(window)
 
     status_action = modules["QAction"]("Stream: Connecting")
     status_action.setEnabled(False)
+    source_action = modules["QAction"](f"Source: {source_label}")
+    source_action.setEnabled(False)
+    pet_action = modules["QAction"]("Pet: Waiting for stream")
+    pet_action.setEnabled(False)
+    hint_action = modules["QAction"]("")
+    hint_action.setEnabled(False)
     quality_action = modules["QAction"](
-        f"Quality: {_quality_profile_label(quality_profile)} (restart to change)"
+        f"Quality: {_quality_profile_label(quality_profile)}"
     )
     quality_action.setEnabled(False)
     debug_action = modules["QAction"]("Show Debug Preview")
@@ -768,6 +847,9 @@ def build_overlay_tray(
     quit_action = modules["QAction"]("Quit")
 
     menu.addAction(status_action)
+    menu.addAction(source_action)
+    menu.addAction(pet_action)
+    menu.addAction(hint_action)
     menu.addAction(quality_action)
     menu.addSeparator()
     menu.addAction(debug_action)
@@ -777,12 +859,14 @@ def build_overlay_tray(
     menu.addSeparator()
     menu.addAction(quit_action)
     icon.setContextMenu(menu)
-    icon.show()
 
     tray = _OverlayTray(
         icon,
         menu,
         status_action,
+        source_action,
+        pet_action,
+        hint_action,
         quality_action,
         debug_action,
         arrange_action,
@@ -791,9 +875,11 @@ def build_overlay_tray(
         window,
         on_quit,
         stream_status,
+        pet_status,
+        source_label,
         debug_preview,
     )
-    tray.refresh_status()
+    tray.show()
     debug_action.triggered.connect(lambda *_: tray.toggle_debug_preview())
     arrange_action.triggered.connect(lambda *_: tray.toggle_arrange_mode())
     reset_placement_action.triggered.connect(lambda *_: tray.reset_placement())
@@ -909,6 +995,7 @@ def run_pet_overlay_qt(
     window,
     fade=None,
     quality_profile: str = "balanced",
+    source_label: str = "Current source",
     **kwargs,
 ):
     from PySide6.QtCore import QTimer
@@ -926,12 +1013,15 @@ def run_pet_overlay_qt(
     # to the window so Qt does not garbage-collect the QSystemTrayIcon, which
     # would silently drop the menu. on_quit stops the event loop.
     stream_status = OverlayStreamStatus()
+    pet_status = OverlayPetStatus()
     debug_preview = OverlayDebugPreview(window)
     window._tray = build_overlay_tray(
         window,
         on_quit=app.quit,
         quality_profile=quality_profile,
+        source_label=source_label,
         stream_status=stream_status,
+        pet_status=pet_status,
         debug_preview=debug_preview,
     )
 
@@ -940,6 +1030,7 @@ def run_pet_overlay_qt(
 
         # The source dialog closes before this event loop begins. Reassert the
         # normal-window level after Qt completes that modal transition.
+        QTimer.singleShot(0, window._tray.show)
         QTimer.singleShot(0, lambda: _bring_overlay_to_front_safely(window))
         QTimer.singleShot(150, lambda: _bring_overlay_to_front_safely(window))
 
@@ -979,6 +1070,7 @@ def run_pet_overlay_qt(
             app_runner=app_runner,
             fade=fade,
             stream_status=stream_status,
+            pet_status=pet_status,
             debug_preview=debug_preview,
             **kwargs,
         ),
@@ -1044,6 +1136,7 @@ def run_pet_overlay(
     crop_controller: PetCropController | None = None,
     inference_gate: IdleInferenceGate | None = None,
     stream_status: OverlayStreamStatus | None = None,
+    pet_status: OverlayPetStatus | None = None,
     debug_preview: OverlayDebugPreview | None = None,
     reconnect_delay_seconds: float | None = None,
     on_stream_status: Callable[[str, str | None], None] | None = None,
@@ -1086,6 +1179,8 @@ def run_pet_overlay(
                         if not has_received_frame:
                             if stream_status is not None:
                                 stream_status.set_live()
+                            if pet_status is not None:
+                                pet_status.set_searching()
                             has_received_frame = True
                         if was_reconnecting:
                             stream_reset_pending.set()
@@ -1093,6 +1188,8 @@ def run_pet_overlay(
                             was_reconnecting = False
                             if stream_status is not None:
                                 stream_status.set_live()
+                            if pet_status is not None:
+                                pet_status.set_searching()
                             report_stream_status("live")
                         if diagnostics is not None:
                             diagnostics.record_decoded_frame()
@@ -1117,6 +1214,8 @@ def run_pet_overlay(
                 was_reconnecting = True
                 if stream_status is not None:
                     stream_status.set_reconnecting(stream_detail)
+                if pet_status is not None:
+                    pet_status.set_waiting_for_stream()
                 report_stream_status("reconnecting", stream_detail)
                 stop.wait(reconnect_delay_seconds)
         except BaseException as exc:  # surfaced to the consumer after join
@@ -1192,6 +1291,8 @@ def run_pet_overlay(
                 or bool(tracking.tracks),
             )
         has_pet = any(track.detected for track in tracking.tracks)
+        if pet_status is not None:
+            pet_status.set_detected(has_pet)
         present_started_at = clock()
         if not debug_enabled:
             fresh = renderer(raw_frame, tracking, feather_radius=feather_radius)

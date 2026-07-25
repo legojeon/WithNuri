@@ -155,17 +155,66 @@ addresses, and then starts the same overlay pipeline as `overlay`. Its default
 decode size is 1280x720 so the demo does not silently use the small probe-size
 default.
 
+The picker also chooses and remembers the startup quality profile: **Balanced**
+(recommended), **Low power**, or **High quality**. The selected profile is
+applied when the overlay starts; changing it during a live session is not
+supported.
+
 ```bash
 .venv/bin/python -m withnuri demo
 ```
 
-Choose **Local demo relay** after starting the looping MP4 publisher, or enter
-the phone stream address (for example `rtsp://<LAN-IP>:8554/nuri`). Pass an
-address to pre-fill the dialog when testing:
+Choose **Play local demo** to let WithNuri start its local MediaMTX relay and
+looping dog MP4 automatically. When the overlay closes, WithNuri stops only
+the relay and publisher it started.
+
+For a real phone demo, choose **Receive Moblin — broadcast from your phone**.
+WithNuri starts only its own local MediaMTX relay, then keeps the overlay open
+while it waits for the phone stream. The picker displays the exact Moblin
+publish address, in the form `rtmp://<Mac-LAN-IP>:1935/nuri`. Set that address
+in Moblin and start broadcasting; WithNuri reads the local RTSP relay at
+`rtsp://127.0.0.1:8554/nuri`. Closing the overlay stops only the relay started
+by WithNuri.
+
+Choose **Connect existing RTSP stream** for a relay already running elsewhere
+(including a future hosted relay), then enter its RTSP address or choose a
+saved stream. Pass an address to pre-fill that mode when testing:
 
 ```bash
 .venv/bin/python -m withnuri demo --url rtsp://127.0.0.1:8554/nuri
 ```
+
+Before using the automatic local demo, stop any manually started MediaMTX or
+`mp4-rtmp --loop` process that is already using ports `1935` or `8554`.
+
+## Desktop App Packaging
+
+The app uses the same Python/UI pipeline on macOS and Windows, but each
+platform needs a separately built executable and platform-matching MediaMTX
+and ffmpeg binaries.
+
+macOS Apple Silicon build:
+
+```bash
+.venv/bin/python -m pip install -e ".[dev,ml,ui,package]"
+bash scripts/build_macos_app.sh
+```
+
+This creates `dist/WithNuri.app`. The current macOS script bundles arm64
+MediaMTX and ffmpeg only.
+
+Windows build (run this from a Windows checkout after placing `mediamtx.exe`,
+`ffmpeg.exe`, `dogcam.mp4`, and `yolo11n-seg.pt` at the paths checked by the
+script):
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[dev,ml,ui,package]"
+$env:FFMPEG_BIN = "C:\tools\ffmpeg\bin\ffmpeg.exe"
+powershell -ExecutionPolicy Bypass -File scripts\build_windows_app.ps1
+```
+
+This creates `dist\WithNuri\WithNuri.exe`. Verify always-on-top and
+click-through behaviour on Windows before treating that build as a release.
 
 ### Recommended balanced preset
 

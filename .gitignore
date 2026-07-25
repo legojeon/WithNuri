@@ -2,10 +2,15 @@ debug/
 .venv/
 .pytest_cache/
 .ruff_cache/
+.cache/
 __pycache__/
 *.py[cod]
 *.pt
 .DS_Store
+
+# Local AI assistant state and review artifacts
+.claude/
+.superpowers/
 
 # Tests and docs (not published)
 tests/
@@ -16,4 +21,16 @@ WithNuri-references/
 
 # MediaMTX binaries (platform-specific, download from upstream); keep mediamtx.yml + LICENSE
 WithNuri-tools/mediamtx/mediamtx
-WithNuri-tools/mediamtx/mediamtx.tar.gz
+WithNuri-tools/mediamtx/mediamtx.exe
+WithNuri-tools/mediamtx/*.tar.gz
+WithNuri-tools/mediamtx/*.zip
+WithNuri-tools/mediamtx/*.log
+
+# Local PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Legacy/local icon working files (the packaged icons are kept)
+assets/withnuri-icon.svg
+assets/withnuri-maltese-icon-preview.png

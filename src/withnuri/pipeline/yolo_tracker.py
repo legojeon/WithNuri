@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from withnuri.pipeline.frames import MaskFrame, RawFrame
+from withnuri.runtime import default_yolo_model_path
 
 
 DEFAULT_YOLO_SEGMENT_MODEL = "yolo11n-seg.pt"
@@ -38,7 +39,7 @@ class PetTrackingFrame:
 
 @dataclass
 class YoloPetTracker:
-    model_name: str = DEFAULT_YOLO_SEGMENT_MODEL
+    model_name: str = field(default_factory=default_yolo_model_path)
     confidence: float = 0.25
     image_size: int | tuple[int, int] = 640
     tracker_config: str = "bytetrack.yaml"
